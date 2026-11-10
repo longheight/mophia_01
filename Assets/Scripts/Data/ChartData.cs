@@ -4,48 +4,45 @@ using UnityEngine;
 
 namespace Mophia.Data
 {
-    // -------------------------------------------------------
-    // ChartData  ―  Mophia チャートデータ全体
-    // -------------------------------------------------------
     [Serializable]
     public class ChartData
     {
-        public MetaData            meta;
-        public List<SectionData>   sections;
+        public MetaData          meta;
+        public List<SectionData> sections;
     }
 
-    // -------------------------------------------------------
-    // MetaData  ―  楽曲メタ情報
-    // -------------------------------------------------------
     [Serializable]
     public class MetaData
     {
-        public string mp4;
-        public string title;
-        public int    width;
-        public int    height;
+        public string  mp4;
+        public string  backgroundMp4; // 抽出されなかった箇所だけの背景動画。旧chart.jsonには無いのでnullの場合がある
+        public string  title;
+        public int     width;
+        public int     height;
+        public float[] backgroundColor; // [R, G, B] 0.0〜1.0。旧chart.jsonには無いのでnullの場合がある
+
+        /// <summary>動画の背景色。未設定(旧形式のchart.json)の場合は白にフォールバックする</summary>
+        public Color BackgroundColor =>
+            backgroundColor != null && backgroundColor.Length >= 3
+                ? new Color(backgroundColor[0], backgroundColor[1], backgroundColor[2])
+                : Color.white;
+
+        /// <summary>GamePlay背景に表示する動画。backgroundMp4が無ければ通常のmp4(元動画)にフォールバックする</summary>
+        public string BackgroundMp4OrDefault =>
+            !string.IsNullOrEmpty(backgroundMp4) ? backgroundMp4 : mp4;
     }
 
-    // -------------------------------------------------------
-    // SectionData  ―  区間ごとのプリセット情報＋ノーツ一覧
-    //   presets: セクション内の映像特性から選ばれた操作タイプ別プリセット
-    //   notes:   このセクションに属するノーツ（noteTypeからpresetを引く）
-    // -------------------------------------------------------
     [Serializable]
     public class SectionData
     {
-        public int              sectionId;
-        public float            startTime;
-        public float            endTime;
-        public ColorData        color;
-        public PresetSelection  presets;   // noteType別プリセット（スコアリング結果）
-        public List<NoteData>   notes;
+        public int             sectionId;
+        public float           startTime;
+        public float           endTime;
+        public ColorData       color;
+        public PresetSelection presets;
+        public List<NoteData>  notes;
     }
 
-    // -------------------------------------------------------
-    // PresetSelection  ―  操作タイプごとの採用プリセット
-    //   例: { "tap": "shrink_sharp", "flick": "vector_round", ... }
-    // -------------------------------------------------------
     [Serializable]
     public class PresetSelection
     {
@@ -54,7 +51,6 @@ namespace Mophia.Data
         public string @long;
         public string touch;
 
-        // noteTypeの文字列からプリセットを引くユーティリティ
         public string Get(string noteType) => noteType switch
         {
             "tap"   => tap,
@@ -66,42 +62,46 @@ namespace Mophia.Data
     }
 
     // -------------------------------------------------------
-    // ColorData  ―  セクション単位の色情報
-    //   映像オブジェクトのカラーから自動生成される
+    // ColorData  ―  RGBA配列形式 (Pythonパイプライン出力と対応)
+    //   primary/secondary: [R, G, B, A] の float配列 (0.0〜1.0)
+    //   isGradient: trueのとき secondary を使う
+    //   type: "solid" | "gradient" | "none"
     // -------------------------------------------------------
     [Serializable]
     public class ColorData
     {
-        // "solid" | "gradient" | "none"
-        public string type;
-        // hex (#RRGGBB) または空文字
-        public string primary;
-        public string secondary;
+        public float[] primary;    // [R, G, B, A]
+        public float[] secondary;  // [R, G, B, A]
+        public bool    isGradient;
+        public string  type;       // "solid" | "gradient" | "none"
+
+        /// <summary>primary配列をUnityのColorに変換する</summary>
+        public Color PrimaryColor =>
+            primary != null && primary.Length >= 3
+                ? new Color(primary[0], primary[1], primary[2],
+                            primary.Length >= 4 ? primary[3] : 1f)
+                : Color.white;
+
+        /// <summary>secondary配列をUnityのColorに変換する</summary>
+        public Color SecondaryColor =>
+            secondary != null && secondary.Length >= 3
+                ? new Color(secondary[0], secondary[1], secondary[2],
+                            secondary.Length >= 4 ? secondary[3] : 1f)
+                : Color.white;
     }
 
-    // -------------------------------------------------------
-    // NoteData  ―  1ノーツ分のデータ
-    //   preset は持たない → SectionData.presets.Get(noteType) で取得
-    // -------------------------------------------------------
     [Serializable]
     public class NoteData
     {
         public int          index;
         public float        time;
         public PositionData position;
-        // "tap" | "flick" | "long" | "touch"
         public string       noteType;
-        // flick方向(度) 0=上・時計回り / flick以外は -1
         public float        direction;
-        // long持続秒 / long以外は -1
         public float        duration;
-        // StreamingAssets以下のフォルダ名（スプライトシート格納先）
         public string       images;
     }
 
-    // -------------------------------------------------------
-    // PositionData  ―  画面上の位置（ピクセル座標）
-    // -------------------------------------------------------
     [Serializable]
     public class PositionData
     {

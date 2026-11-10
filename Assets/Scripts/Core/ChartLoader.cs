@@ -6,12 +6,12 @@ namespace Mophia.Core
 {
     public class ChartLoader : MonoBehaviour
     {
-        // StreamingAssets直下のJSONファイル名
+        // 曲フォルダ直下のJSONファイル名
         [SerializeField] private string chartFileName = "chart.json";
 
         public ChartData Load()
         {
-            string path = Path.Combine(Application.streamingAssetsPath, chartFileName);
+            string path = Path.Combine(SongSelection.GetSongDirectory(), chartFileName);
 
             if (!File.Exists(path))
             {

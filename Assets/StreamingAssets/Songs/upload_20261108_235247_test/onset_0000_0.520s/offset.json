@@ -1,0 +1,36 @@
+{
+  "index": 0,
+  "frameCount": 4,
+  "cellWidth": 445,
+  "cellHeight": 443,
+  "cols": 2,
+  "rows": 2,
+  "atlasWidth": 890,
+  "atlasHeight": 886,
+  "frames": [
+    {
+      "dx": 0,
+      "dy": 0,
+      "w": 445,
+      "h": 443
+    },
+    {
+      "dx": 445,
+      "dy": 0,
+      "w": 339,
+      "h": 338
+    },
+    {
+      "dx": 0,
+      "dy": 443,
+      "w": 234,
+      "h": 232
+    },
+    {
+      "dx": 445,
+      "dy": 443,
+      "w": 130,
+      "h": 126
+    }
+  ]
+}

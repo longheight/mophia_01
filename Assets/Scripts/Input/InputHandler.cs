@@ -11,11 +11,15 @@ namespace Mophia.Input
     {
         [Header("判定ウィンドウ(秒)")]
         [SerializeField] private float perfectWindow = 0.05f;
-        [SerializeField] private float goodWindow    = 0.10f;
+        [SerializeField] private float greatWindow   = 0.10f;
+        [SerializeField] private float goodWindow    = 0.15f;
         [SerializeField] private float badWindow     = 0.18f;
 
         [Header("タッチ判定半径(px)")]
         [SerializeField] private float hitRadius = 120f;
+
+        // 早押し側の判定窓に入ったタイミングでノーツを登録する側(NoteView)が参照する
+        public float BadWindow => badWindow;
 
         private readonly List<NoteView> _activeNotes = new();
         private readonly Dictionary<int, (Vector2 pos, float time)> _touchStart = new();
@@ -163,11 +167,12 @@ namespace Mophia.Input
         {
             float diff = Mathf.Abs(timeUntilOnset);
             if (diff <= perfectWindow) return JudgeResult.Perfect;
+            if (diff <= greatWindow)   return JudgeResult.Great;
             if (diff <= goodWindow)    return JudgeResult.Good;
             if (diff <= badWindow)     return JudgeResult.Bad;
             return JudgeResult.Miss;
         }
     }
 
-    public enum JudgeResult { Perfect, Good, Bad, Miss }
+    public enum JudgeResult { Perfect, Great, Good, Bad, Miss }
 }

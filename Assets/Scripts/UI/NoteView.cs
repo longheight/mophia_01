@@ -2,6 +2,7 @@ using System.Collections;
 using UnityEngine;
 using Mophia.Data;
 using Mophia.Input;
+using Mophia.Core;
 
 namespace Mophia.UI
 {
@@ -13,11 +14,15 @@ namespace Mophia.UI
         public float  TimeUntilOnset { get; private set; }
 
         private NoteData            _note;
+        private string              _preset;
         private ColorData           _color;
         private IndicatorController _indicator;
         private EffectPlayer        _effect;
         private InputHandler        _inputHandler;
+        private UIManager           _uiManager;
+        private NotesRunner         _runner;
         private bool                _judged;
+        private Coroutine           _updateRoutine;
 
         private void Awake()
         {
@@ -25,20 +30,20 @@ namespace Mophia.UI
             _effect    = GetComponent<EffectPlayer>();
         }
 
-        public void Setup(NoteData note, ColorData color, float timeUntilOnset, InputHandler inputHandler)
+        public void Setup(NoteData note, string preset, ColorData color, float timeUntilOnset, InputHandler inputHandler, UIManager uiManager, NotesRunner runner)
         {
             _note          = note;
+            _preset        = preset;
             _color         = color;
             TimeUntilOnset = timeUntilOnset;
             NoteType       = note.noteType;
             _inputHandler  = inputHandler;
+            _uiManager     = uiManager;
+            _runner        = runner;
             _judged        = false;
 
-            Debug.Log($"[NoteView] Setup: index={note.index} preset={note.preset} timeUntilOnset={timeUntilOnset:F2}");
-
-            // 映像ピクセル座標(1920x1080基準) → Canvas座標(中心原点)に変換
             float cx = note.position.x - 960f;
-            float cy = -(note.position.y - 540f); // Y軸反転
+            float cy = -(note.position.y - 540f);
             GetComponent<RectTransform>().anchoredPosition = new Vector2(cx, cy);
 
             if (_indicator == null)
@@ -47,22 +52,34 @@ namespace Mophia.UI
                 return;
             }
 
-            _indicator.Play(note.preset, color, timeUntilOnset, note.direction, note.duration);
-            StartCoroutine(UpdateTimeAndRegister());
+            _indicator.Play(preset, color, timeUntilOnset, note.direction, note.duration);
+
+            if (_updateRoutine != null) StopCoroutine(_updateRoutine);
+            _updateRoutine = StartCoroutine(UpdateTimeAndRegister());
         }
 
         private IEnumerator UpdateTimeAndRegister()
         {
-            while (TimeUntilOnset > 0f)
+            // onsetちょうどの1フレームだけ登録すると、その1フレームより早い/遅いタップが
+            // 全て無視され「押しても反応しない」→badWindow経過後の自動Missとして遅れて
+            // 消えるだけに見える(shrinkで顕著な「謎の溜め」の正体はこれ)。
+            // badWindow(判定される最遅ライン)と対称にonset前から登録しておくことで、
+            // 実際のタップ窓(perfect/good/bad)全域で即座に判定できるようにする。
+            float badWindow = _inputHandler != null ? _inputHandler.BadWindow : 0.18f;
+
+            while (TimeUntilOnset > badWindow)
             {
                 TimeUntilOnset -= Time.deltaTime;
                 yield return null;
             }
-            TimeUntilOnset = 0f;
             _inputHandler?.Register(this);
 
-            // Miss猶予: badWindow後に自動Miss
-            yield return new WaitForSeconds(0.18f);
+            while (TimeUntilOnset > -badWindow)
+            {
+                TimeUntilOnset -= Time.deltaTime;
+                yield return null;
+            }
+
             if (!_judged) OnInput(JudgeResult.Miss);
         }
 
@@ -72,18 +89,20 @@ namespace Mophia.UI
             _judged = true;
 
             _inputHandler?.Unregister(this);
-            _indicator.Stop();
+            _indicator.Dismiss();
+            _uiManager?.RegisterJudgment(result, GetComponent<RectTransform>());
 
-            Debug.Log($"[NoteView] index={_note.index} result={result}");
+            if (result != JudgeResult.Miss)
+                _effect.Play(_note.images);
 
-            _effect.Play(_note.images);
-            StartCoroutine(DestroyAfterEffect());
+            StartCoroutine(ReturnToPoolAfterEffect());
         }
 
-        private IEnumerator DestroyAfterEffect()
+        private IEnumerator ReturnToPoolAfterEffect()
         {
+            // エフェクト再生時間だけ待ってからプールに返却
             yield return new WaitForSeconds(2f);
-            Destroy(gameObject);
+            _runner?.ReturnToPool(this);
         }
     }
 }

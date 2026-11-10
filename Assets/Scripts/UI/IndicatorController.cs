@@ -1,5 +1,5 @@
+using System;
 using System.Collections;
-using DG.Tweening;
 using UnityEngine;
 using UnityEngine.UI;
 using Mophia.Data;
@@ -7,354 +7,272 @@ using Mophia.Data;
 namespace Mophia.UI
 {
     /// <summary>
-    /// preset文字列に対応したインジケーターUIアニメーションを制御する。
-    /// DOTweenを使用。各presetはCoroutine+DOTweenの組み合わせで実装。
+    /// 「目印」は全preset共通で target(枠線) / move(充填) の2オブジェクトだけで表現する。
+    /// preset ごとに違うのはスプライト(見た目)とAnimatorのモーションだけで、
+    /// オブジェクト自体は増減しない(=別の形が混ざって見える事故が構造的に起きない)。
+    ///
+    /// 色は固定で target=secondary, move=primary。
+    ///
+    /// Animatorステートは preset文字列に対応する
+    ///   "<preset>_Approach" (接近中。0〜1を本スクリプトが強制的にスクラブする)
+    ///   "<preset>_Onset"    (判定タイミング到達後。等速の実時間再生)
+    /// を使う。中身(move の scale など)はUnityのAnimationウィンドウで自由に作り込む。
     /// </summary>
+    [RequireComponent(typeof(Animator))]
     public class IndicatorController : MonoBehaviour
     {
-        [Header("共通")]
-        [SerializeField] private Image circleImage;       // shrink_circle / spread / fill_circle用
-        [SerializeField] private Image[] lineImages;      // line_anim用 (4本想定)
-        [SerializeField] private Image arrowImage;        // vector_note用
-        [SerializeField] private Image glowImage;         // round系のぼかし用オーバーレイ
+        [Serializable]
+        private struct PresetSprites
+        {
+            public string preset;
+            public Sprite targetSprite; // 枠線
+            public Sprite moveSprite;   // 充填/動く方
+        }
 
-        // sharp/round共通: roundはglowImageのalphaを上げて縁をぼかす
-        private const float RoundGlowAlpha = 0.6f;
-        private const float SharpGlowAlpha = 0.0f;
+        [Header("表示対象(全preset共通でこの2つだけ)")]
+        [SerializeField] private Image target;
+        [SerializeField] private Image move;
 
-        private Sequence _sequence;
+        [Header("preset単位のスプライト差し替え")]
+        [SerializeField] private PresetSprites[] presetSprites;
+
+        [Header("Editor確認用(Play Mode不要でPlayを試せる)")]
+        [SerializeField] private string previewPreset = "spread_round";
+        [SerializeField] private Color previewPrimary = Color.white;
+        [SerializeField] private Color previewSecondary = Color.white;
+
+        private const int Layer = 0;
+        private const float DismissDuration = 0.15f;
+        private const float DismissScaleBoost = 0.4f; // 掛け算ではなく足し算(shrinkのように基準スケールが小さいpresetでも変化量が一定になるように)
+
+        private Animator _animator;
         private Coroutine _routine;
 
-        // -------------------------------------------------------
-        // 公開API
-        // -------------------------------------------------------
+        [ContextMenu("プレビュー適用(previewPreset/Primary/Secondaryを反映)")]
+        private void PreviewApplyColor()
+        {
+            var testColor = new ColorData
+            {
+                primary   = new[] { previewPrimary.r,   previewPrimary.g,   previewPrimary.b,   previewPrimary.a },
+                secondary = new[] { previewSecondary.r, previewSecondary.g, previewSecondary.b, previewSecondary.a },
+                isGradient = true,
+                type = "gradient",
+            };
+            ApplySprites(previewPreset);
+            ApplyColor(testColor);
+            Debug.Log($"[IndicatorController] プレビュー適用: preset={previewPreset}");
+        }
+
+        private void Awake()
+        {
+            _animator = GetComponent<Animator>();
+        }
+
+        // ゲーム開始前(音声再生が始まる前)に、実際に使うpresetのAnimatorステート/Spriteを
+        // 一度だけ触っておく。初回使用時に発生する初期化コストを、負荷に敏感なタイミングより
+        // 前に前倒しして済ませておくためのもの。
+        public void WarmUp(string preset)
+        {
+            ApplySprites(preset);
+
+            _animator.Rebind();
+            _animator.Update(0f);
+
+            int hash = Animator.StringToHash(preset + "_Approach");
+            if (_animator.HasState(Layer, hash))
+            {
+                _animator.Play(hash, Layer, 0f);
+                _animator.Update(0f);
+            }
+
+            HideAll();
+        }
 
         public void Play(string preset, ColorData color, float timeUntilOnset, float direction, float duration)
         {
-            Debug.Log($"[IndicatorController] Play called: preset={preset} timeUntilOnset={timeUntilOnset:F2}");
             Stop();
+            ApplySprites(preset);
             ApplyColor(color);
+            ApplyDirection(preset, direction);
 
-            bool isRound = preset.EndsWith("_round");
-            if (glowImage != null)
-                glowImage.color = WithAlpha(glowImage.color, isRound ? RoundGlowAlpha : SharpGlowAlpha);
+            _routine = StartCoroutine(PlayRoutine(preset, timeUntilOnset, duration));
+        }
 
-            switch (preset)
+        private void ApplySprites(string preset)
+        {
+            PresetSprites sprites = FindSprites(preset);
+            if (target != null) target.sprite = sprites.targetSprite;
+            if (move   != null) move.sprite   = sprites.moveSprite;
+
+            // fillプリセットだけ、moveをパイチャート状に塗りつぶすType.Filled(Radial360)にする。
+            // 他のpresetはtarget/moveを共用する通常のType.Simple(スケールで動かす)に戻す。
+            if (move != null)
             {
-                case "shrink_circle_sharp":
-                case "shrink_circle_round":
-                    _routine = StartCoroutine(ShrinkCircle(timeUntilOnset, isRound));
-                    break;
-
-                case "line_anim_sharp":
-                case "line_anim_round":
-                    _routine = StartCoroutine(LineAnim(timeUntilOnset, isRound));
-                    break;
-
-                case "spread_sharp":
-                case "spread_round":
-                    _routine = StartCoroutine(Spread(timeUntilOnset, isRound));
-                    break;
-
-                case "fill_circle_sharp":
-                case "fill_circle_round":
-                    _routine = StartCoroutine(FillCircle(timeUntilOnset, duration, isRound));
-                    break;
-
-                case "vector_note_sharp":
-                case "vector_note_round":
-                    _routine = StartCoroutine(VectorNote(timeUntilOnset, direction, isRound));
-                    break;
-
-                default:
-                    Debug.LogWarning($"[IndicatorController] 未実装のpreset: {preset}");
-                    break;
+                if (preset.StartsWith("fill"))
+                {
+                    move.type          = Image.Type.Filled;
+                    move.fillMethod    = Image.FillMethod.Radial360;
+                    move.fillOrigin    = (int)Image.Origin360.Top;
+                    move.fillClockwise = true;
+                    move.fillAmount    = 0f;
+                }
+                else
+                {
+                    move.type = Image.Type.Simple;
+                }
             }
         }
 
-        public void Stop()
+        private PresetSprites FindSprites(string preset)
         {
-            _sequence?.Kill();
-            if (_routine != null) StopCoroutine(_routine);
-            ResetAll();
-        }
+            foreach (var s in presetSprites)
+                if (s.preset == preset)
+                    return s;
 
-        // -------------------------------------------------------
-        // 色の適用
-        // -------------------------------------------------------
+            Debug.LogWarning($"[IndicatorController] presetSprites未設定: {preset}");
+            return new PresetSprites { preset = preset };
+        }
 
         private void ApplyColor(ColorData color)
         {
             if (color == null || color.type == "none") return;
 
-            Color primary = ParseHex(color.primary, Color.white);
-
-            if (circleImage != null) circleImage.color = primary;
-            if (arrowImage != null) arrowImage.color = primary;
-            foreach (var line in lineImages)
-                if (line != null) line.color = primary;
-
-            // gradient: glowImageにsecondaryを載せる
-            if (color.type == "gradient" && !string.IsNullOrEmpty(color.secondary))
-            {
-                Color secondary = ParseHex(color.secondary, primary);
-                if (glowImage != null) glowImage.color = WithAlpha(secondary, glowImage.color.a);
-            }
+            if (target != null) target.color = WithAlpha(color.SecondaryColor, target.color.a);
+            if (move   != null) move.color   = WithAlpha(color.PrimaryColor,   move.color.a);
         }
 
-        // -------------------------------------------------------
-        // preset実装
-        // -------------------------------------------------------
-
-        /// <summary>
-        /// shrink_circle: 大きい円(scale=3)がonsetに向かって1.0に縮む
-        /// roundはglowで縁をぼかす
-        /// </summary>
-        private IEnumerator ShrinkCircle(float timeUntilOnset, bool isRound)
+        private void ApplyDirection(string preset, float direction)
         {
-            if (circleImage == null) yield break;
+            if (!preset.StartsWith("vector")) return;
 
-            circleImage.gameObject.SetActive(true);
-            circleImage.transform.localScale = Vector3.one * 3f;
-            circleImage.color = WithAlpha(circleImage.color, 1f);
-
-            _sequence = DOTween.Sequence();
-            _sequence.Append(
-                circleImage.transform
-                    .DOScale(1f, timeUntilOnset)
-                    .SetEase(Ease.InQuart)
-            );
-            // roundはフェードインしながら縮む（ふわっとした印象）
-            if (isRound)
-            {
-                _sequence.Join(
-                    circleImage.DOFade(0.85f, timeUntilOnset * 0.5f)
-                        .SetEase(Ease.OutQuad)
-                );
-            }
-
-            yield return _sequence.WaitForCompletion();
-
-            // onset到達: パルス
-            circleImage.transform
-                .DOPunchScale(Vector3.one * 0.15f, 0.1f, 1)
-                .SetEase(Ease.OutQuad);
+            // direction: 0=上, 時計回り → Unityの回転(Z軸)に変換(Z回転は反時計回りが正なので符号反転)
+            var rot = Quaternion.Euler(0f, 0f, -direction);
+            if (target != null) target.rectTransform.localRotation = rot;
+            if (move   != null) move.rectTransform.localRotation   = rot;
         }
 
-        /// <summary>
-        /// line_anim: 4方向のラインが外から中心へ収束
-        /// sharpは直線的、roundは弧を描くように回転しながら来る
-        /// </summary>
-        private IEnumerator LineAnim(float timeUntilOnset, bool isRound)
+        public void Stop()
         {
-            if (lineImages == null || lineImages.Length == 0) yield break;
-
-            float startDist = 300f;
-            float duration = timeUntilOnset;
-
-            _sequence = DOTween.Sequence();
-
-            for (int i = 0; i < lineImages.Length; i++)
+            if (_routine != null)
             {
-                if (lineImages[i] == null) continue;
+                StopCoroutine(_routine);
+                _routine = null;
+            }
+            _animator.speed = 1f;
+            HideAll();
+        }
 
-                float angle = 90f * i;
-                float rad = angle * Mathf.Deg2Rad;
-                Vector3 startPos = new Vector3(
-                    Mathf.Cos(rad) * startDist,
-                    Mathf.Sin(rad) * startDist,
-                    0f
-                );
+        // 判定された瞬間に呼ぶ。即座に隠すのではなく、一瞬スケールアップ+フェードアウトしてから隠す
+        public void Dismiss()
+        {
+            if (_routine != null)
+            {
+                StopCoroutine(_routine);
+                _routine = null;
+            }
+            _animator.speed = 1f;
+            _animator.enabled = false;
+            StartCoroutine(DismissRoutine());
+        }
 
-                lineImages[i].gameObject.SetActive(true);
-                lineImages[i].rectTransform.anchoredPosition = startPos;
-                lineImages[i].color = WithAlpha(lineImages[i].color, 0f);
+        private IEnumerator DismissRoutine()
+        {
+            // 弾ける演出は「今実際に見えているスケール」を基準にする。一律1.0から始めると、
+            // shrink(判定時0.4)のようにその時点で既に縮んでいるpresetでは、押した瞬間に
+            // 1.0へスナップしてから弾けるように見えてしまい、押した反応として繋がらない。
+            float targetBaseScale = target != null ? target.transform.localScale.x : 1f;
+            float moveBaseScale   = move   != null ? move.transform.localScale.x   : 1f;
 
-                // フェードイン
-                _sequence.Join(
-                    lineImages[i].DOFade(1f, duration * 0.3f)
-                        .SetEase(Ease.OutQuad)
-                );
-                // 中心へ移動
-                Ease moveEase = isRound ? Ease.InOutSine : Ease.InQuart;
-                _sequence.Join(
-                    lineImages[i].rectTransform
-                        .DOAnchorPos(Vector2.zero, duration)
-                        .SetEase(moveEase)
-                );
-                // roundは回転も加える
-                if (isRound)
-                {
-                    lineImages[i].rectTransform.localRotation = Quaternion.Euler(0, 0, angle);
-                    _sequence.Join(
-                        lineImages[i].rectTransform
-                            .DOLocalRotate(new Vector3(0, 0, angle + 45f), duration)
-                            .SetEase(Ease.InOutSine)
-                    );
-                }
+            float elapsed = 0f;
+            while (elapsed < DismissDuration)
+            {
+                float t = elapsed / DismissDuration;
+                // 線形だと最初の数フレームでほぼ変化が無く「押した瞬間なのに反応が遅れて見える」ため、
+                // イーズアウト(最初に大きく動いて後半で減速)にして押した瞬間の反応を強くする
+                float eased = 1f - (1f - t) * (1f - t);
+                float alpha = Mathf.Lerp(1f, 0f, eased);
+
+                ApplyDismissFrame(target, Mathf.Lerp(targetBaseScale, targetBaseScale + DismissScaleBoost, eased), alpha);
+                ApplyDismissFrame(move,   Mathf.Lerp(moveBaseScale,   moveBaseScale   + DismissScaleBoost, eased), alpha);
+
+                elapsed += Time.deltaTime;
+                yield return null;
             }
 
-            yield return _sequence.WaitForCompletion();
+            HideAll();
+            ResetTransformsAndAlpha();
         }
 
-        /// <summary>
-        /// spread: onset時に中心からリングが外に拡散してフェードアウト
-        /// timeUntilOnsetの間は点滅で待機、onset到達で拡散
-        /// </summary>
-        private IEnumerator Spread(float timeUntilOnset, bool isRound)
+        private static void ApplyDismissFrame(Image img, float scale, float alpha)
         {
-            if (circleImage == null) yield break;
-
-            circleImage.gameObject.SetActive(true);
-            circleImage.transform.localScale = Vector3.one * 0.8f;
-
-            // onset前: ゆっくり点滅（存在感を示す）
-            float blinkDuration = timeUntilOnset;
-            float blinkCycle = 0.6f;
-            _sequence = DOTween.Sequence();
-            _sequence.Append(
-                circleImage.DOFade(0.4f, blinkCycle * 0.5f).SetEase(Ease.InOutSine)
-            );
-            _sequence.Append(
-                circleImage.DOFade(1.0f, blinkCycle * 0.5f).SetEase(Ease.InOutSine)
-            );
-            _sequence.SetLoops(Mathf.CeilToInt(blinkDuration / blinkCycle));
-            yield return new WaitForSeconds(blinkDuration);
-            _sequence.Kill();
-
-            // onset: 外に拡散
-            circleImage.transform.localScale = Vector3.one;
-            circleImage.color = WithAlpha(circleImage.color, 1f);
-
-            float spreadTime = isRound ? 0.4f : 0.25f;
-            _sequence = DOTween.Sequence();
-            _sequence.Append(
-                circleImage.transform
-                    .DOScale(isRound ? 3.5f : 3.0f, spreadTime)
-                    .SetEase(isRound ? Ease.OutSine : Ease.OutExpo)
-            );
-            _sequence.Join(
-                circleImage.DOFade(0f, spreadTime).SetEase(Ease.OutQuad)
-            );
-            yield return _sequence.WaitForCompletion();
+            if (img == null) return;
+            img.transform.localScale = Vector3.one * scale;
+            img.color = WithAlpha(img.color, alpha);
         }
 
-        /// <summary>
-        /// fill_circle: 円をImage.fillAmountで時計回りに充填、long noteのduration分かけて満たす
-        /// onset到達で充填完了→解放エフェクト
-        /// </summary>
-        private IEnumerator FillCircle(float timeUntilOnset, float duration, bool isRound)
+        // 次回Playで使い回せるよう、scale/alphaを既定値に戻す(表示ON/OFF自体はHideAllが担当)
+        private void ResetTransformsAndAlpha()
         {
-            if (circleImage == null) yield break;
+            if (target != null) { target.transform.localScale = Vector3.one; target.color = WithAlpha(target.color, 1f); }
+            if (move   != null) { move.color = WithAlpha(move.color, 1f); } // scaleはHideAllで0に戻す
+        }
 
-            // fillAmountを使うのでImage TypeをFilledに設定
-            circleImage.type = Image.Type.Filled;
-            circleImage.fillMethod = Image.FillMethod.Radial360;
-            circleImage.fillOrigin = (int)Image.Origin360.Top;
-            circleImage.fillClockwise = true;
-            circleImage.fillAmount = 0f;
-            circleImage.gameObject.SetActive(true);
+        private IEnumerator PlayRoutine(string preset, float timeUntilOnset, float duration)
+        {
+            // SetActive(true)と同じフレームだとAnimatorの内部グラフ構築が
+            // 間に合っておらずHasStateが誤って失敗することがあるため1フレーム待つ
+            yield return null;
 
-            // onset前: fillAmountを0→1に（timeUntilOnset秒かけて）
-            _sequence = DOTween.Sequence();
-            _sequence.Append(
-                DOTween.To(
-                    () => circleImage.fillAmount,
-                    v => circleImage.fillAmount = v,
-                    1f,
-                    timeUntilOnset
-                ).SetEase(Ease.Linear)
-            );
-            yield return _sequence.WaitForCompletion();
+            // Instantiate直後にSetActive(false)されるプール運用のせいで、Animatorの
+            // コントローラーバインドが中断されたまま復帰することがあるため強制的に再バインドする。
+            _animator.Rebind();
+            _animator.Update(0f);
 
-            // long noteのduration分: 充填状態を維持
+            if (target != null) target.gameObject.SetActive(true);
+
+            int approachHash = Animator.StringToHash(preset + "_Approach");
+            int onsetHash    = Animator.StringToHash(preset + "_Onset");
+
+            if (!_animator.HasState(Layer, approachHash))
+            {
+                Debug.LogWarning($"[IndicatorController] Animatorステート未定義: {preset}_Approach");
+                yield break;
+            }
+
+            // Approach: speed=0で自動再生を止め、接近時間ぴったりにnormalizedTimeを手動スクラブする
+            _animator.enabled = true;
+            _animator.speed   = 0f;
+
+            // 毎フレームUpdate(0f)まで呼ぶと、接近中のノーツが複数重なったときにAnimator評価が
+            // 二重(手動+Unity自身の自動評価分)になり負荷が増える。Play()だけ呼べば、
+            // enabled=trueな限りUnityの自動評価が次のタイミングで反映してくれる(1フレーム遅れる程度)。
+            float elapsed = 0f;
+            while (elapsed < timeUntilOnset)
+            {
+                float t = timeUntilOnset > 0f ? Mathf.Clamp01(elapsed / timeUntilOnset) : 1f;
+                _animator.Play(approachHash, Layer, t);
+                yield return null;
+                elapsed += Time.deltaTime;
+            }
+            _animator.Play(approachHash, Layer, 1f);
+            _animator.Update(0f);
+
+            // longノーツ: onset到達後もduration分だけ保持(Approachの最終フレームのまま)
             if (duration > 0f)
                 yield return new WaitForSeconds(duration);
 
-            // 解放: スケールアップ＆フェードアウト
-            float releaseTime = isRound ? 0.35f : 0.2f;
-            _sequence = DOTween.Sequence();
-            _sequence.Append(
-                circleImage.transform
-                    .DOScale(isRound ? 1.8f : 1.5f, releaseTime)
-                    .SetEase(Ease.OutExpo)
-            );
-            _sequence.Join(
-                circleImage.DOFade(0f, releaseTime).SetEase(Ease.OutQuad)
-            );
-            yield return _sequence.WaitForCompletion();
-        }
-
-        /// <summary>
-        /// vector_note: 矢印がdirectionの向きに回転して表示。
-        /// onset前: 矢印が点滅しながら方向を示す
-        /// sharpはパキっと点滅、roundはふわっとフェード
-        /// </summary>
-        private IEnumerator VectorNote(float timeUntilOnset, float direction, bool isRound)
-        {
-            if (arrowImage == null) yield break;
-
-            arrowImage.gameObject.SetActive(true);
-
-            // direction: 0=上, 時計回り → Unityの回転(Z軸)に変換
-            // UnityのZ回転は反時計回りが正なので符号反転
-            float zRot = -direction;
-            arrowImage.rectTransform.localRotation = Quaternion.Euler(0f, 0f, zRot);
-
-            // onset前: 点滅
-            float blinkCycle = isRound ? 0.5f : 0.3f;
-            float elapsed = 0f;
-            _sequence = DOTween.Sequence();
-
-            while (elapsed < timeUntilOnset)
+            // Onset: ここからは通常の自動再生に切り替える
+            if (_animator.HasState(Layer, onsetHash))
             {
-                float fadeOutTime = blinkCycle * (isRound ? 0.6f : 0.4f);
-                float fadeInTime = blinkCycle - fadeOutTime;
-
-                _sequence.Append(arrowImage.DOFade(0.2f, fadeOutTime).SetEase(Ease.InOutSine));
-                _sequence.Append(arrowImage.DOFade(1.0f, fadeInTime).SetEase(Ease.InOutSine));
-                elapsed += blinkCycle;
-            }
-
-            yield return new WaitForSeconds(timeUntilOnset);
-            _sequence.Kill();
-
-            // onset: 矢印がスケールアップしてパルス
-            arrowImage.color = WithAlpha(arrowImage.color, 1f);
-            arrowImage.transform
-                .DOPunchScale(Vector3.one * 0.3f, 0.15f, 1)
-                .SetEase(Ease.OutQuad);
-        }
-
-        // -------------------------------------------------------
-        // ユーティリティ
-        // -------------------------------------------------------
-
-        private void ResetAll()
-        {
-            if (circleImage != null)
-            {
-                circleImage.gameObject.SetActive(false);
-                circleImage.transform.localScale = Vector3.one;
-                circleImage.fillAmount = 1f;
-                circleImage.type = Image.Type.Simple;
-            }
-            if (arrowImage != null)
-            {
-                arrowImage.gameObject.SetActive(false);
-                arrowImage.transform.localScale = Vector3.one;
-            }
-            foreach (var line in lineImages)
-            {
-                if (line != null) line.gameObject.SetActive(false);
+                _animator.speed = 1f;
+                _animator.Play(onsetHash, Layer, 0f);
             }
         }
 
-        private static Color ParseHex(string hex, Color fallback)
+        private void HideAll()
         {
-            if (string.IsNullOrEmpty(hex)) return fallback;
-            if (ColorUtility.TryParseHtmlString(hex, out Color c)) return c;
-            return fallback;
+            if (target != null) target.gameObject.SetActive(false);
+            if (move   != null) move.transform.localScale = Vector3.zero;
         }
 
         private static Color WithAlpha(Color c, float a) =>

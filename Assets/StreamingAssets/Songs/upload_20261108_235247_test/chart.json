@@ -1,0 +1,72 @@
+{
+  "meta": {
+    "mp4": "upload_20261108_235247_test.mp4",
+    "backgroundMp4": "background_only.mp4",
+    "title": "upload_20261108_235247_test",
+    "width": 1920,
+    "height": 1080,
+    "backgroundColor": [
+      1.0012166939529719,
+      1.0012068206188725,
+      1.0012302174287684
+    ]
+  },
+  "sections": [
+    {
+      "sectionId": 0,
+      "startTime": 0.0,
+      "endTime": 1.0,
+      "color": {
+        "primary": [
+          0.9095373415479473,
+          4.9990758884186836e-05,
+          0.0042566350862091665,
+          1.0
+        ],
+        "secondary": [
+          0.7100365133846507,
+          0.1441935520546109,
+          0.21010434019799326,
+          1.0
+        ],
+        "isGradient": false,
+        "type": "solid"
+      },
+      "presets": {
+        "tap": "shrink_round",
+        "flick": "fill_round",
+        "long": "fill_round",
+        "touch": "fill_round"
+      },
+      "notes": [
+        {
+          "index": 0,
+          "time": 0.52,
+          "position": {
+            "x": 960.0,
+            "y": 540.0
+          },
+          "noteType": "tap",
+          "direction": -1.0,
+          "duration": -1.0,
+          "images": "onset_0000_0.520s",
+          "color": {
+            "primary": [
+              0.9095373415479473,
+              4.9990758884186836e-05,
+              0.0042566350862091665,
+              1.0
+            ],
+            "secondary": [
+              0.7100365133846507,
+              0.1441935520546109,
+              0.21010434019799326,
+              1.0
+            ],
+            "isGradient": false
+          }
+        }
+      ]
+    }
+  ]
+}
